@@ -1,0 +1,405 @@
+// Imp class
+
+CLASS lsc_zi_travel_bo_managed DEFINITION INHERITING FROM cl_abap_behavior_saver.
+
+  PROTECTED SECTION.
+
+ENDCLASS.
+
+CLASS lhc_Travel DEFINITION INHERITING FROM cl_abap_behavior_handler.
+  PRIVATE SECTION.
+
+    METHODS get_global_authorizations FOR GLOBAL AUTHORIZATION
+      IMPORTING REQUEST requested_authorizations FOR Travel RESULT result.
+    METHODS calculateTotalPriceTravel FOR DETERMINE ON SAVE
+      IMPORTING keys FOR Travel~calculateTotalPriceTravel.
+    METHODS validatemandatoryfields FOR VALIDATE ON SAVE
+      IMPORTING keys FOR Travel~validatemandatoryfields.
+    METHODS getstatus FOR READ
+      IMPORTING keys FOR FUNCTION Travel~getstatus RESULT result.
+    METHODS totalOpenTravelCount FOR READ
+      IMPORTING keys FOR FUNCTION Travel~totalOpenTravelCount RESULT result.
+    METHODS copy FOR MODIFY
+      IMPORTING keys FOR ACTION Travel~copy.
+    METHODS markAsAccept FOR MODIFY
+      IMPORTING keys FOR ACTION Travel~markAsAccept RESULT result.
+    METHODS fillstatus FOR MODIFY
+      IMPORTING keys FOR ACTION Travel~fillstatus RESULT result.
+    METHODS get_instance_features FOR INSTANCE FEATURES
+      IMPORTING keys REQUEST requested_features FOR Travel RESULT result.
+*    METHODS generatetravelid FOR DETERMINE ON SAVE
+*      IMPORTING keys FOR Travel~generatetravelid.
+    METHODS earlynumbering_cba_Booking FOR NUMBERING
+      IMPORTING entities FOR CREATE Travel\_Booking.
+    METHODS earlynumbering_create FOR NUMBERING
+      IMPORTING entities FOR CREATE Travel.
+
+ENDCLASS.
+
+CLASS lhc_Travel IMPLEMENTATION.
+
+  METHOD get_global_authorizations.
+  ENDMETHOD.
+
+*  METHOD generatetravelid.
+*
+*    "Read the data from the buffer table / draft table
+*
+*    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE "ZI_TRAVEL_BO_MANAGED refers to the root view interface name and in local mode will bypass all the dcl available for that cds BO
+*    ENTITY Travel "Travel is the alias name of the entity specified
+*    "fields ( AgencyId, BeginDate ) "To mention only specific fields
+*    ALL FIELDS  "To mention all the fields
+*    WITH CORRESPONDING #( keys ) " specify the importing parameter
+*    RESULT DATA(lt_travel) " Output data
+*    REPORTED DATA(lt_reported) " key value info of records which failed rel. EML operation
+*    FAILED DATA(lt_failed). " Error/ warning or any message for the record if generated
+
+
+*      " Update the travel record with new travel id
+*      MODIFY ENTITIES OF zi_travel_bo_managed IN LOCAL MODE "ZI_TRAVEL_BO_MANAGED refers to the root view interface name and in local mode will bypass all the dcl available for that cds BO
+*      ENTITY Travel "Travel is the alias name of the entity specified
+*      UPDATE "Operation - Update / create / delete
+*      FROM VALUE #(
+*                    FOR ls_travel IN lt_travel         "mass value updation
+*                    (
+*                       TravelId = lv_new_travel_id     "field that to be updated
+*                       %control-TravelId = if_abap_behv=>mk-on   "setting flag similar to bapi - '00'(off) or '01'(on) values
+*                    )
+*                  ).
+*  ENDMETHOD.
+
+  METHOD earlynumbering_create.
+
+    " Pass the info from entities to mapped - if travel Id already exist
+    LOOP AT entities INTO DATA(ls_entity) WHERE TravelId IS NOT INITIAL.
+      APPEND CORRESPONDING #( ls_entity ) TO mapped-travel.
+    ENDLOOP.
+
+    " Create a table where table id determination is required
+    DATA(entities_travel) = entities.
+    DELETE entities_travel WHERE TravelId IS NOT INITIAL.
+
+    "Determine the logic to get the next travel id
+    IF entities_travel IS NOT INITIAL.
+
+      SELECT MAX( travel_id )
+      FROM /dmo/travel
+      INTO @DATA(lv_new_travel_id).
+
+      lv_new_travel_id += 1. " Increment by 1
+
+      " Fill the mapped info from the entities -->importing parameter
+      mapped-travel = VALUE #(
+                        FOR ls_entities IN entities
+                        (
+                         %cid = ls_entities-%cid
+                         %is_draft = ls_entities-%is_draft
+                         travelid = lv_new_travel_id
+                        )
+                      ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD earlynumbering_cba_Booking.
+
+    DATA : lv_max_booking_id TYPE /dmo/booking_id.
+*** Entity manipulation language
+*** language that helps to manipulate the data dynamically
+*** Click on the F2 button on method name to check the importing, changing and exporting parameters used in the method
+*** Operation create / update / delete / read / execute an action
+
+    " Read the booking entity values already in system (even in draft table)
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel BY \_Booking " read by association
+    FROM CORRESPONDING #( entities )
+    LINK DATA(lt_booking).
+
+    "get the max booking id for all the travel
+    LOOP AT entities ASSIGNING FIELD-SYMBOL(<lfs_travel_grp>) GROUP BY <lfs_travel_grp>-TravelId.
+
+      " Get highest booking id " for eml read
+      " Reduce operator used to sum the value in a internal table without loop, to avoid loop inside loop
+      lv_max_booking_id = REDUCE #(     "Purpose of reduce is to derive the conclusion of the data
+                                INIT max = CONV /dmo/booking_id( '0' ) " Init. the value
+                                " Iterate on all the booking details
+                                FOR ls_booking IN lt_booking USING KEY entity WHERE ( source-TravelId = <lfs_travel_grp>-TravelId )
+                                NEXT max = COND /dmo/booking_id( WHEN ls_booking-target-BookingId > max THEN ls_booking-target-BookingId ELSE max )
+                                  ).
+
+      "Get the highest booking data from the importing data
+      lv_max_booking_id = REDUCE #(
+                                     INIT max = lv_max_booking_id
+                                     FOR entity IN entities USING KEY entity WHERE ( TravelId = <lfs_travel_grp>-TravelId ) "Parent
+                                     FOR target IN entity-%target " Child
+                                     NEXT max = COND /dmo/booking_id( WHEN target-BookingId > max THEN target-BookingId ELSE max ) "generate the particular type
+                                   ).
+
+    ENDLOOP.
+
+    "Increment booking id
+    lv_max_booking_id += 10.
+
+    " Filling mapped parameter
+    mapped-booking = VALUE #(
+                             FOR ls_travel_info IN entities
+                                 FOR ls_booking_info IN ls_travel_info-%target
+                                 (
+                                        %cid = ls_booking_info-%cid
+                                        %is_draft = ls_booking_info-%is_draft
+                                        travelid = ls_booking_info-travelid
+                                        BookingId = COND #( WHEN ls_booking_info-BookingId IS INITIAL THEN lv_max_booking_id ELSE ls_booking_info-BookingId )
+                                )
+                            ).
+
+  ENDMETHOD.
+
+  METHOD calculateTotalPriceTravel.
+
+    DATA: lv_currency_code TYPE zi_travel_bo_managed-CurrencyCode,
+          lv_total_price   TYPE zi_booking_bo_managed-FlightPrice.
+
+    " Read the travel and booking details using EML language
+
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel    ALL FIELDS  " Travel data
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_travel)
+
+
+    ENTITY travel BY \_Booking  "Booking data
+    ALL FIELDS
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_booking).
+
+    "Calculate total price
+    lv_currency_code = VALUE #( lt_booking[ 1 ]-CurrencyCode OPTIONAL ). "Get the Currency code
+    lv_total_price = REDUCE #(
+                                INIT total_price = CONV /dmo/total_price( '0' )
+                                FOR  ls_booking IN lt_booking
+                                NEXT total_price += ls_booking-FlightPrice
+                             ).
+
+    " Update the travel record with new travel id
+    MODIFY ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel
+    UPDATE FIELDS ( TotalPrice CurrencyCode )
+    WITH VALUE #(
+                  FOR ls_keys IN keys
+                  (
+                     %key = ls_keys-%key
+                     %is_draft = ls_keys-%is_draft
+                     CurrencyCode = lv_currency_code
+                     TotalPrice = lv_total_price
+                  )
+                ).
+  ENDMETHOD.
+
+  METHOD validatemandatoryfields.
+    " read travel info
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel
+    ALL FIELDS WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_travel)
+    REPORTED DATA(lt_reported)
+    FAILED DATA(lt_failed).
+
+    " Validate the mandatory fields
+    LOOP AT lt_travel INTO DATA(ls_travel).
+
+      " Initialize / clear the state area or even if we enter the agency id value and enter it will add multiple error for other fields
+      reported-travel = VALUE #(
+                                   ( %tky = ls_travel-%tky  %state_area = 'VALIDATE_AGENCYID' )
+                                   ( %tky = ls_travel-%tky  %state_area = 'VALIDATE_BEGINDATE' )
+                                   ( %tky = ls_travel-%tky  %state_area = 'VALIDATE_ENDDATE' )
+                               ).
+      IF ls_travel-AgencyId IS INITIAL OR ls_travel-BeginDate IS INITIAL OR ls_travel-EndDate IS INITIAL.
+*         1) fill the failed parameter for error
+        failed-travel = VALUE #(
+                                    ( %tky = ls_travel-%tky ) " helps to raise the error message for particular record ---> combined key with draft, key values, primary
+
+                               ).
+
+*           2) Specify the error message if the mandatory info is missing
+        IF ls_travel-AgencyId IS INITIAL.
+          reported-travel = VALUE #( BASE reported-travel " to maintain the state for all error message
+                                     (
+                                       %tky = ls_travel-%tky
+                                       %state_area = 'VALIDATE_AGENCYID'
+                                       %msg = new_message(
+                                            id = 'SY'
+                                            number = 002
+                                            v1 = 'Agency Id is required'
+                                            severity = if_abap_behv_message=>severity-error
+                                       )
+                                       %element-agencyid = if_abap_behv=>mk-on " on which field we need to have the error flag on or off -  '00'(off) or '01'(on) values
+                                      )
+                                   ).
+        ENDIF.
+        IF ls_travel-BeginDate IS INITIAL.
+          reported-travel = VALUE #( BASE reported-travel
+                                     (
+                                       %tky = ls_travel-%tky
+                                       %state_area = 'VALIDATE_BEGINDATE' " To grp the error / ifo / warning message for a particular field
+                                       %msg = new_message(
+                                            id = 'SY'
+                                            number = 002
+                                            v1 = 'Begin Date is required'
+                                            severity = if_abap_behv_message=>severity-error
+                                       )
+                                       %element-begindate = if_abap_behv=>mk-on " on which field we need to have the error flag on or off -  '00'(off) or '01'(on) values
+                                      )
+                                   ).
+        ENDIF.
+        IF ls_travel-EndDate IS INITIAL.
+          reported-travel = VALUE #( BASE reported-travel
+                                     (
+                                       %tky = ls_travel-%tky
+                                       %state_area = 'VALIDATE_ENDDATE'
+                                       %msg = new_message(
+                                            id = 'SY'
+                                            number = 002
+                                            v1 = 'End Date is required'
+                                            severity = if_abap_behv_message=>severity-error
+                                       )
+                                       %element-enddate = if_abap_behv=>mk-on " on which field we need to have the error flag on or off -  '00'(off) or '01'(on) values
+                                      )
+                                   ).
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD getstatus.
+
+  ENDMETHOD.
+
+  METHOD totalOpenTravelCount.
+
+    "Get the input status from param
+    DATA(input_status) = VALUE #( keys[ 1 ]-%param-TravelStatus OPTIONAL ).
+
+    " Get the total status based on param
+    SELECT COUNT( * ) AS totalTravels
+    FROM /dmo/travel
+    WHERE status EQ @input_status
+    INTO @DATA(lv_total_travel).
+
+    " Fill the result parameter
+    result = VALUE #(
+                        FOR ls_keys IN keys
+                        (
+                          %cid = ls_keys-%cid
+                          %param-TotalOpenCount = lv_total_travel
+                        )
+                     ).
+
+  ENDMETHOD.
+
+  METHOD copy.
+  ENDMETHOD.
+
+  METHOD markAsAccept.
+    " Read the travel data based on the input parameter
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel
+    ALL FIELDS
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_result)
+    FAILED DATA(lt_failed)
+    REPORTED DATA(lt_reported).
+
+    IF lt_result IS NOT INITIAL.
+      MODIFY ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+      ENTITY Travel
+      UPDATE FIELDS ( Status )
+      WITH VALUE #(
+                      FOR ls_result IN lt_result
+                      (
+                         %tky = ls_result-%tky
+                         Status = 'A'
+                      )
+                  )
+      REPORTED DATA(lt_rep)
+      FAILED DATA(lt_fail)
+      MAPPED mapped.
+
+
+      " Get the recent result data ----> to avoid the object page error
+      READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+      ENTITY Travel
+      ALL FIELDS
+      WITH CORRESPONDING #( keys )
+      RESULT DATA(lt_after_result).
+
+      " RESULT PARAM
+      result = VALUE #(
+                        FOR ls_after_result IN lt_after_result
+                        (
+                           %tky = ls_after_result-%tky
+                           %param = ls_after_result
+                        )
+                      ).
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD fillstatus.
+    " Read the travel data based on the input parameter
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel
+    ALL FIELDS
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_result)
+    FAILED DATA(lt_failed)
+    REPORTED DATA(lt_reported).
+
+    IF lt_result IS NOT INITIAL.
+      MODIFY ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+      ENTITY Travel
+      UPDATE FIELDS ( Status )
+      WITH VALUE #(
+                      FOR ls_result IN lt_result
+                      (
+                         %tky = ls_result-%tky
+                         Status = 'O' "Update the empty status as O - Open
+                      )
+                  )
+      REPORTED DATA(lt_rep)
+      FAILED DATA(lt_fail)
+      MAPPED mapped.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD get_instance_features.
+    " Read data using eml
+    READ ENTITIES OF zi_travel_bo_managed IN LOCAL MODE
+    ENTITY Travel
+    ALL FIELDS
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(lt_result)
+    REPORTED DATA(lt_reported)
+    FAILED DATA(lt_failed).
+
+    " Fill the result ----> if the status is A then readonly if others then mandatory, and if the status is already in change disable
+    result = VALUE #(
+                        FOR ls_result IN lt_result
+                        (
+                         %tky = ls_result-%tky
+                         %field = VALUE #(
+                                            BeginDate = COND #( WHEN ls_result-Status = 'A' THEN if_abap_behv=>fc-f-read_only
+                                                                                            ELSE if_abap_behv=>fc-f-mandatory )
+                                            EndDate = COND #( WHEN ls_result-Status = 'A' THEN if_abap_behv=>fc-f-read_only
+                                                                                            ELSE if_abap_behv=>fc-f-mandatory )
+                                         )
+                          %action = VALUE #(
+                                             markAsAccept = COND #( WHEN ls_result-Status = 'A' THEN if_abap_behv=>fc-o-disabled )
+                                            )
+                          %update = COND #( WHEN ls_result-Status = 'X' THEN if_abap_behv=>fc-o-disabled
+                                                                              ELSE if_abap_behv=>fc-o-enabled )
+                          %delete = COND #( WHEN ls_result-Status = 'X' THEN if_abap_behv=>fc-o-disabled
+                                                                              ELSE if_abap_behv=>fc-o-enabled )
+                        )
+                    ).
+  ENDMETHOD.
+
+ENDCLASS.

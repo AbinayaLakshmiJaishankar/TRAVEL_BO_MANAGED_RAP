@@ -1,0 +1,9 @@
+
+// Customer parameter for total open status
+
+@EndUserText.label: 'Custom parameter for total open status'
+define abstract entity zb_total_open_stat_cust_p
+  //with parameters parameter_name : parameter_type
+{
+    TravelStatus : /dmo/overall_status;  
+}

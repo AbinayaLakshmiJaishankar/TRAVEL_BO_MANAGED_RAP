@@ -1,0 +1,7 @@
+@EndUserText.label: 'Abstract entity for status'
+define abstract entity zb_status_result
+  //with parameters parameter_name : parameter_type
+{
+    OverallStatuscode : /dmo/overall_status;
+    
+}

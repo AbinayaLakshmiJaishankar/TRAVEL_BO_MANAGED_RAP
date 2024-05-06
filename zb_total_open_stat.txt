@@ -1,0 +1,8 @@
+// Abstract entity
+
+@EndUserText.label: 'Abstract entity for status - Open in travel'
+define abstract entity zb_total_open_stat
+  //with parameters parameter_name : parameter_type
+{
+    TotalOpenCount : abap.int2;  
+}

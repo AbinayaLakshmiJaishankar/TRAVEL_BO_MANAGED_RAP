@@ -1,0 +1,144 @@
+// Behavior definition for iterface view travel - Managed
+
+managed implementation in class zbp_i_travel_bo_managed unique;
+strict ( 2 ); // To make the developer to follow the strict rules of the framework
+with draft;
+define behavior for ZI_TRAVEL_BO_MANAGED alias Travel
+// Data to be saved in the DB table - final table
+persistent table /dmo/travel
+// to save the data in temp table if someting goes off in the app the typed data will be there
+draft table ztravel_man_rap
+// Locks for seemless simultanious access to same data by multiple users --> to maintain concurrency of the data as well
+// Two types of locks
+// 1) Pessimestic locks
+// In our sap GUI for example we make pessmimestic locks to over come the logs
+// PO -> edit (make lock on the table level with enqueue and dequeue ) --> save (then the lock is released)
+// no one an make change while editing by other user
+// Locks are handled at the server side
+// 2) Optimistic locks
+// In RAP locks are handeled at the clinet side we need to metion lock master and dependant
+// Etag needs to be mentioned ( i.e, timestamp , hash vale, etc)
+// The framework will pick the filed value for example
+// table has below data
+// id       agency          created_on              changed_on
+// 1        1234            15.04.2024018.55.01pm   15.04.2024018.55.21pm ----> 2 users logins both try to fetch the details they will get the details
+// If the user 2 try to change the value of the above record etag value is sent along with the changed_on value (15.04.2024018.55.21pm)
+// If the user 2 edits the above data and saves the data at changed_on --> 15.04.2024018.55.45pm
+// The user 1 while try to edit the above value with the etag passed as changed_on --> 15.04.2024018.55.21pm , the framework will reject the request by checking the latest change_on etag value.
+lock master
+// draft
+total etag Lastchangedat
+// Authorisation we have global and instance
+//(global access to all the operation on the appln, instance restrict user to specific set of operation)
+authorization master ( global )
+// (Mostly timestamp, hash value)
+etag master Lastchangedat
+// before creation of the record system will genereate a unique value for key
+// 1) key can we semantic key or guid or uuid (system generated random values)
+early numbering
+{
+  // Validation that framework will take care
+  field ( readonly ) Createdat, Createdby, Lastchangedat, Lastchangedby; // Cannot create or update these fields readonly
+  field ( mandatory ) AgencyId;
+  field (features : instance) BeginDate, EndDate; //feature control action based on other field if status is A then make the begin and end date as readonly
+  field ( readonly ) TravelId; // travel id readonly ( achevied via early numbering ) --> early numbering
+  field ( readonly ) TotalPrice, CurrencyCode;
+  field ( readonly ) CustomerId; //Achieved via the late numbering
+  create ;
+  update (features : instance);
+  delete (features : instance);
+  association _Booking { create; with draft; }
+
+  //Action
+  // Two types - Factory actions and non-factory actions
+  // Two operation of action is GET and Post
+  //1)POST -cdu -  any action internaly ---> key word action
+  //2)GET - Function -  get the info and return the respected data ---> key word function
+  // Create a cds view for structure of the result [ abstract entity view ]
+  //--> $self is the current record ---> return full entity data
+  // want it global data then define it as static
+  // static means its not bound to any entity its global
+  function getstatus result [1] zb_status_result; // Data retrived will be stored in results --> return data in predefined abstract enity type
+  static function totalOpenTravelCount parameter zb_total_open_stat_cust_p result[1] zb_total_open_stat;
+  //map the fields to appropriate fields in the persistant table of the root BO
+
+  //FACTORY ACTION - Eg --> copy a line item
+  //Static and instance ---> static --> default values and instance ----> copy any line item
+  factory action copy [1];
+  action (features : instance) markAsAccept result [1] $self;
+  //It will make the status available if there is no status present default values.
+  static action fillstatus result [1] zb_total_open_stat;
+
+  mapping for /dmo/travel
+    {
+      TravelId      = travel_id;
+      AgencyId      = agency_id;
+      CustomerId    = customer_id;
+      BeginDate     = begin_date;
+      EndDate       = end_date;
+      BookingFee    = booking_fee;
+      TotalPrice    = total_price;
+      CurrencyCode  = currency_code;
+      Description   = description;
+      Status        = status;
+      Createdat     = createdat;
+      Createdby     = createdby;
+      Lastchangedat = lastchangedat;
+      Lastchangedby = lastchangedby;
+    }
+  draft action Activate;
+  draft action Discard;
+  draft action Edit;
+  draft action Resume;
+
+  draft determine action Prepare
+  {
+    validation validatemandatoryfields;
+  }
+  // Determination - On save and modify  to change the value of one field based on other fields
+  // 1) On save we can use to generate a id based on other field
+  // 2) On modify - to change the total price based on booking fee
+  //  determination generatetravelid on save { create; } // to create the travelid field value --->commented code
+
+  // Detrmination to calculate the total price at travel based on the booking price in the child
+  determination calculateTotalPriceTravel on save { create; }
+
+  // Validation while saving
+  validation validatemandatoryfields on save { create; update; }
+
+}
+// managed rap bo with unmanaged save capability ---> cannot have persistant table and
+define behavior for zi_booking_bo_managed alias Booking
+// Data to be saved in the DB table - final table
+persistent table /dmo/booking
+draft table zbooking_man_rap
+//with unmanaged save
+// lock deppendent on root BO
+lock dependent by _Travel
+//Authorization dependent on root BO
+authorization dependent by _Travel
+// Etag dependent on root BO
+etag dependent by _Travel
+early numbering
+{
+  update;
+  delete;
+  // Validation that framework will take care
+  field ( readonly ) TravelId; // Cannot create or update the field readonly
+  field ( readonly ) BookingId; //readonly while editing the field and create as early numbering is achieved for this
+  association _Travel { with draft; }
+
+  //map the fields to appropriate fields in the persistant table of the child BO
+  mapping for /dmo/booking
+    {
+      TravelId     = travel_id;
+      BookingId    = booking_id;
+      BookingDate  = booking_date;
+      CustomerId   = customer_id;
+      CarrierId    = carrier_id;
+      ConnectionId = connection_id;
+      FlightDate   = flight_date;
+      FlightPrice  = flight_price;
+      CurrencyCode = currency_code;
+    }
+}
